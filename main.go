@@ -18,10 +18,13 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 var (
 	// Command line flags.
+	configFile      string
 	httpMethod      string
 	postBody        string
 	followRedirects bool
@@ -44,10 +47,8 @@ var (
 const maxRedirects = 10
 
 func init() {
+	flag.StringVar(&configFile, "config", "config.yaml", "path to the configuration file")
 	flag.StringVar(&httpMethod, "X", "GET", "HTTP method to use")
-	flag.StringVar(&postBody, "d", "", "the body of a POST or PUT request; from file use @filename")
-	flag.BoolVar(&followRedirects, "L", false, "follow 30x redirects")
-	flag.BoolVar(&onlyHeader, "I", false, "don't read body of request")
 	flag.BoolVar(&insecure, "k", false, "allow insecure SSL connections")
 	flag.Var(&httpHeaders, "H", "set HTTP header; repeatable: -H 'Accept: ...' -H 'Range: ...'")
 	flag.BoolVar(&saveOutput, "O", false, "save body as remote filename")
@@ -72,8 +73,35 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  NO_PROXY      comma-separated list of hosts to exclude from proxy")
 }
 
+type HTTPServerConfig struct {
+	Url         string            `yaml:"url"`
+	IpVersion   string            `yaml:"ipVersion"`
+	HttpHeaders http.Header       `yaml:"headers"`
+	ExtraLabels map[string]string `yaml:"extraLabels"` // TODO: check VM instrumentation if there is a label
+}
+
+type Config struct {
+	HttpServers []HTTPServerConfig `yaml:"endpoints"`
+	Test        string             `yaml:"test"`
+}
+
+func (c *Config) readConf() {
+
+	yamlFile, err := ioutil.ReadFile(configFile)
+	if err != nil {
+		log.Fatalf("couldn't open the config file %s, error message: #%v ", configFile, err)
+	}
+	err = yaml.Unmarshal(yamlFile, &c)
+	if err != nil {
+		log.Fatalf("Unmarshal error: %v", err)
+	}
+}
+
 func main() {
 	flag.Parse()
+
+	var config Config
+	config.readConf()
 
 	if showVersion {
 		fmt.Printf("%s %s (runtime: %s)\n", os.Args[0], version, runtime.Version())
@@ -185,28 +213,29 @@ func dialContext(network string) func(ctx context.Context, network, addr string)
 func visit(url *url.URL) {
 	req := newRequest(httpMethod, url, postBody)
 
-	var t0, t1, t2, t3, t4, t5, t6 time.Time
+	var getConnTime, dnsStartTime, dnsDoneTime, connectStartTime, connectDoneTime, gotConnTime, gotFirstResponseByteTime, tlsHandshakeStartTime, tlsHandshakeStopTime time.Time
 
 	trace := &httptrace.ClientTrace{
-		DNSStart: func(_ httptrace.DNSStartInfo) { t0 = time.Now() },
-		DNSDone:  func(_ httptrace.DNSDoneInfo) { t1 = time.Now() },
+		GetConn:  func(hostPort string) { getConnTime = time.Now() },
+		DNSStart: func(_ httptrace.DNSStartInfo) { dnsStartTime = time.Now() },
+		DNSDone:  func(_ httptrace.DNSDoneInfo) { dnsDoneTime = time.Now() },
 		ConnectStart: func(_, _ string) {
-			if t1.IsZero() {
+			if connectStartTime.IsZero() {
 				// connecting to IP
-				t1 = time.Now()
+				connectStartTime = time.Now()
 			}
 		},
 		ConnectDone: func(net, addr string, err error) {
 			if err != nil {
 				log.Fatalf("unable to connect to host %v: %v", addr, err)
 			}
-			t2 = time.Now()
+			connectDoneTime = time.Now()
 
 		},
-		GotConn:              func(_ httptrace.GotConnInfo) { t3 = time.Now() },
-		GotFirstResponseByte: func() { t4 = time.Now() },
-		TLSHandshakeStart:    func() { t5 = time.Now() },
-		TLSHandshakeDone:     func(_ tls.ConnectionState, _ error) { t6 = time.Now() },
+		GotConn:              func(_ httptrace.GotConnInfo) { gotConnTime = time.Now() },
+		GotFirstResponseByte: func() { gotFirstResponseByteTime = time.Now() },
+		TLSHandshakeStart:    func() { tlsHandshakeStartTime = time.Now() },
+		TLSHandshakeDone:     func(_ tls.ConnectionState, _ error) { tlsHandshakeStopTime = time.Now() },
 	}
 	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
 
@@ -255,73 +284,26 @@ func visit(url *url.URL) {
 		log.Fatalf("failed to read response: %v", err)
 	}
 
-	// print ssl/tls version which is used for connection
-	connectedvia := "plaintext"
-	if resp.tls != nil {
-		switch resp.tls.version {
-		case tls.versiontls12:
-			connectedvia = "tlsv1.2"
-		case tls.versiontls13:
-			connectedvia = "tlsv1.3"
-		}
-	}
-
+	bodySize, _ := io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	t7 := time.Now() // after read body
-	if t0.IsZero() {
+	postBodyReadTime := time.Now() // after read body
+	if dnsStartTime.IsZero() {
 		// we skipped DNS
-		t0 = t1
+		dnsStartTime = dnsDoneTime
 	}
 
-	// switch url.Scheme {
-	// case "https":
-	// 	printf(colorize(httpsTemplate),
-	// 		fmta(t1.Sub(t0)), // dns lookup
-	// 		fmta(t2.Sub(t1)), // tcp connection
-	// 		fmta(t6.Sub(t5)), // tls handshake
-	// 		fmta(t4.Sub(t3)), // server processing
-	// 		fmta(t7.Sub(t4)), // content transfer
-	// 		fmtb(t1.Sub(t0)), // namelookup
-	// 		fmtb(t2.Sub(t0)), // connect
-	// 		fmtb(t3.Sub(t0)), // pretransfer
-	// 		fmtb(t4.Sub(t0)), // starttransfer
-	// 		fmtb(t7.Sub(t0)), // total
-	// 	)
-	// case "http":
-	// 	printf(colorize(httpTemplate),
-	// 		fmta(t1.Sub(t0)), // dns lookup
-	// 		fmta(t3.Sub(t1)), // tcp connection
-	// 		fmta(t4.Sub(t3)), // server processing
-	// 		fmta(t7.Sub(t4)), // content transfer
-	// 		fmtb(t1.Sub(t0)), // namelookup
-	// 		fmtb(t3.Sub(t0)), // connect
-	// 		fmtb(t4.Sub(t0)), // starttransfer
-	// 		fmtb(t7.Sub(t0)), // total
-	// 	)
-	// }
+	dnsLookup := dnsDoneTime.Sub(dnsStartTime)
+	tcpConnection := connectDoneTime.Sub(connectStartTime)
+	tlsHandshake := tlsHandshakeStopTime.Sub(tlsHandshakeStartTime)
+	serverProcessing := gotFirstResponseByteTime.Sub(gotConnTime)
+	contentTransfer := postBodyReadTime.Sub(gotFirstResponseByteTime)
+	totalDuration := postBodyReadTime.Sub(getConnTime)
 
-	if followRedirects && isRedirect(resp) {
-		loc, err := resp.Location()
-		if err != nil {
-			if err == http.ErrNoLocation {
-				// 30x but no Location to follow, give up.
-				return
-			}
-			log.Fatalf("unable to follow redirect: %v", err)
-		}
+	fmt.Print(bodySize, dnsLookup, tcpConnection, tlsHandshake, serverProcessing, contentTransfer, totalDuration)
+	// httpstat_error_total{code="404"}
+	// httpstat_lookup_total{code="404"}
 
-		redirectsFollowed++
-		if redirectsFollowed > maxRedirects {
-			log.Fatalf("maximum number of redirects (%d) followed", maxRedirects)
-		}
-
-		visit(loc)
-	}
-}
-
-func isRedirect(resp *http.Response) bool {
-	return resp.StatusCode > 299 && resp.StatusCode < 400
 }
 
 func newRequest(method string, url *url.URL, body string) *http.Request {
