@@ -15,35 +15,9 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
-	"path"
 	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/fatih/color"
-)
-
-const (
-	httpsTemplate = `` +
-		`  DNS Lookup   TCP Connection   TLS Handshake   Server Processing   Content Transfer` + "\n" +
-		`[%s  |     %s  |    %s  |        %s  |       %s  ]` + "\n" +
-		`            |                |               |                   |                  |` + "\n" +
-		`   namelookup:%s      |               |                   |                  |` + "\n" +
-		`                       connect:%s     |                   |                  |` + "\n" +
-		`                                   pretransfer:%s         |                  |` + "\n" +
-		`                                                     starttransfer:%s        |` + "\n" +
-		`                                                                                total:%s` + "\n"
-
-	httpTemplate = `` +
-		`   DNS Lookup   TCP Connection   Server Processing   Content Transfer` + "\n" +
-		`[ %s  |     %s  |        %s  |       %s  ]` + "\n" +
-		`             |                |                   |                  |` + "\n" +
-		`    namelookup:%s      |                   |                  |` + "\n" +
-		`                        connect:%s         |                  |` + "\n" +
-		`                                      starttransfer:%s        |` + "\n" +
-		`                                                                 total:%s` + "\n"
 )
 
 var (
@@ -96,14 +70,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "                used for HTTPS requests if HTTPS_PROXY undefined")
 	fmt.Fprintln(os.Stderr, "  HTTPS_PROXY   proxy for HTTPS requests; complete URL or HOST[:PORT]")
 	fmt.Fprintln(os.Stderr, "  NO_PROXY      comma-separated list of hosts to exclude from proxy")
-}
-
-func printf(format string, a ...interface{}) (n int, err error) {
-	return fmt.Fprintf(color.Output, format, a...)
-}
-
-func grayscale(code color.Attribute) func(string, ...interface{}) string {
-	return color.New(code + 232).SprintfFunc()
 }
 
 func main() {
@@ -236,7 +202,6 @@ func visit(url *url.URL) {
 			}
 			t2 = time.Now()
 
-			printf("\n%s%s\n", color.GreenString("Connected to "), color.CyanString(addr))
 		},
 		GotConn:              func(_ httptrace.GotConnInfo) { t3 = time.Now() },
 		GotFirstResponseByte: func() { t4 = time.Now() },
@@ -290,19 +255,17 @@ func visit(url *url.URL) {
 		log.Fatalf("failed to read response: %v", err)
 	}
 
-	// Print SSL/TLS version which is used for connection
-	connectedVia := "plaintext"
-	if resp.TLS != nil {
-		switch resp.TLS.Version {
-		case tls.VersionTLS12:
-			connectedVia = "TLSv1.2"
-		case tls.VersionTLS13:
-			connectedVia = "TLSv1.3"
+	// print ssl/tls version which is used for connection
+	connectedvia := "plaintext"
+	if resp.tls != nil {
+		switch resp.tls.version {
+		case tls.versiontls12:
+			connectedvia = "tlsv1.2"
+		case tls.versiontls13:
+			connectedvia = "tlsv1.3"
 		}
 	}
-	printf("\n%s %s\n", color.GreenString("Connected via"), color.CyanString("%s", connectedVia))
 
-	bodyMsg := readResponseBody(req, resp)
 	resp.Body.Close()
 
 	t7 := time.Now() // after read body
@@ -311,64 +274,32 @@ func visit(url *url.URL) {
 		t0 = t1
 	}
 
-	// print status line and headers
-	printf("\n%s%s%s\n", color.GreenString("HTTP"), grayscale(14)("/"), color.CyanString("%d.%d %s", resp.ProtoMajor, resp.ProtoMinor, resp.Status))
-
-	names := make([]string, 0, len(resp.Header))
-	for k := range resp.Header {
-		names = append(names, k)
-	}
-	sort.Sort(headers(names))
-	for _, k := range names {
-		printf("%s %s\n", grayscale(14)(k+":"), color.CyanString(strings.Join(resp.Header[k], ",")))
-	}
-
-	if bodyMsg != "" {
-		printf("\n%s\n", bodyMsg)
-	}
-
-	fmta := func(d time.Duration) string {
-		return color.CyanString("%7dms", int(d/time.Millisecond))
-	}
-
-	fmtb := func(d time.Duration) string {
-		return color.CyanString("%-9s", strconv.Itoa(int(d/time.Millisecond))+"ms")
-	}
-
-	colorize := func(s string) string {
-		v := strings.Split(s, "\n")
-		v[0] = grayscale(16)(v[0])
-		return strings.Join(v, "\n")
-	}
-
-	fmt.Println()
-
-	switch url.Scheme {
-	case "https":
-		printf(colorize(httpsTemplate),
-			fmta(t1.Sub(t0)), // dns lookup
-			fmta(t2.Sub(t1)), // tcp connection
-			fmta(t6.Sub(t5)), // tls handshake
-			fmta(t4.Sub(t3)), // server processing
-			fmta(t7.Sub(t4)), // content transfer
-			fmtb(t1.Sub(t0)), // namelookup
-			fmtb(t2.Sub(t0)), // connect
-			fmtb(t3.Sub(t0)), // pretransfer
-			fmtb(t4.Sub(t0)), // starttransfer
-			fmtb(t7.Sub(t0)), // total
-		)
-	case "http":
-		printf(colorize(httpTemplate),
-			fmta(t1.Sub(t0)), // dns lookup
-			fmta(t3.Sub(t1)), // tcp connection
-			fmta(t4.Sub(t3)), // server processing
-			fmta(t7.Sub(t4)), // content transfer
-			fmtb(t1.Sub(t0)), // namelookup
-			fmtb(t3.Sub(t0)), // connect
-			fmtb(t4.Sub(t0)), // starttransfer
-			fmtb(t7.Sub(t0)), // total
-		)
-	}
+	// switch url.Scheme {
+	// case "https":
+	// 	printf(colorize(httpsTemplate),
+	// 		fmta(t1.Sub(t0)), // dns lookup
+	// 		fmta(t2.Sub(t1)), // tcp connection
+	// 		fmta(t6.Sub(t5)), // tls handshake
+	// 		fmta(t4.Sub(t3)), // server processing
+	// 		fmta(t7.Sub(t4)), // content transfer
+	// 		fmtb(t1.Sub(t0)), // namelookup
+	// 		fmtb(t2.Sub(t0)), // connect
+	// 		fmtb(t3.Sub(t0)), // pretransfer
+	// 		fmtb(t4.Sub(t0)), // starttransfer
+	// 		fmtb(t7.Sub(t0)), // total
+	// 	)
+	// case "http":
+	// 	printf(colorize(httpTemplate),
+	// 		fmta(t1.Sub(t0)), // dns lookup
+	// 		fmta(t3.Sub(t1)), // tcp connection
+	// 		fmta(t4.Sub(t3)), // server processing
+	// 		fmta(t7.Sub(t4)), // content transfer
+	// 		fmtb(t1.Sub(t0)), // namelookup
+	// 		fmtb(t3.Sub(t0)), // connect
+	// 		fmtb(t4.Sub(t0)), // starttransfer
+	// 		fmtb(t7.Sub(t0)), // total
+	// 	)
+	// }
 
 	if followRedirects && isRedirect(resp) {
 		loc, err := resp.Location()
@@ -442,48 +373,6 @@ func getFilenameFromHeaders(headers http.Header) string {
 
 	// return an empty string if we were unable to determine the filename
 	return ""
-}
-
-// readResponseBody consumes the body of the response.
-// readResponseBody returns an informational message about the
-// disposition of the response body's contents.
-func readResponseBody(req *http.Request, resp *http.Response) string {
-	if isRedirect(resp) || req.Method == http.MethodHead {
-		return ""
-	}
-
-	w := ioutil.Discard
-	msg := color.CyanString("Body discarded")
-
-	if saveOutput || outputFile != "" {
-		filename := outputFile
-
-		if saveOutput {
-			// try to get the filename from the Content-Disposition header
-			// otherwise fall back to the RequestURI
-			if filename = getFilenameFromHeaders(resp.Header); filename == "" {
-				filename = path.Base(req.URL.RequestURI())
-			}
-
-			if filename == "/" {
-				log.Fatalf("No remote filename; specify output filename with -o to save response body")
-			}
-		}
-
-		f, err := os.Create(filename)
-		if err != nil {
-			log.Fatalf("unable to create file %s: %v", filename, err)
-		}
-		defer f.Close()
-		w = f
-		msg = color.CyanString("Body read")
-	}
-
-	if _, err := io.Copy(w, resp.Body); err != nil && w != ioutil.Discard {
-		log.Fatalf("failed to read response body: %v", err)
-	}
-
-	return msg
 }
 
 type headers []string
