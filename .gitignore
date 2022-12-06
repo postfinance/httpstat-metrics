@@ -25,4 +25,4 @@ _testmain.go
 
 httpstat
 
-config.yaml
+./config.yaml
