@@ -72,6 +72,7 @@ func usage() {
 type HTTPServerConfig struct {
 	Url         string            `yaml:"url"`
 	IpVersion   string            `yaml:"ipVersion"`
+	Host        string            `yaml:"host"`
 	HttpHeaders http.Header       `yaml:"headers"`
 	ExtraLabels map[string]string `yaml:"extraLabels"` // TODO: check VM instrumentation if there is a label
 }

@@ -94,6 +94,9 @@ func (q *Querier) visit() {
 		log.Fatalf("unable to create request: %v", err)
 	}
 	req.Header = q.httpServerConfig.HttpHeaders
+	if q.httpServerConfig.Host != "" {
+		req.Host = q.httpServerConfig.Host
+	}
 
 	var getConnTime, dnsStartTime, dnsDoneTime, connectStartTime, connectDoneTime, gotConnTime, gotFirstResponseByteTime, tlsHandshakeStartTime, tlsHandshakeStopTime time.Time
 
@@ -166,7 +169,7 @@ func (q *Querier) visit() {
 	contentTransfer := postBodyReadTime.Sub(gotFirstResponseByteTime)
 	totalDuration := postBodyReadTime.Sub(getConnTime)
 
-	fmt.Print(bodySize, dnsLookup, tcpConnection, tlsHandshake, serverProcessing, contentTransfer, totalDuration)
+	fmt.Println(bodySize, dnsLookup, tcpConnection, tlsHandshake, serverProcessing, contentTransfer, totalDuration)
 	// httpstat_error_total{code="404"}
 	// httpstat_lookup_total{code="404"}
 
