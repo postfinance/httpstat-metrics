@@ -37,6 +37,7 @@ var (
 	clientCertFile  string
 	fourOnly        bool
 	sixOnly         bool
+	interval        time.Duration
 
 	// number of redirects followed
 	redirectsFollowed int
@@ -57,6 +58,7 @@ func init() {
 	flag.StringVar(&clientCertFile, "E", "", "client cert file for tls config")
 	flag.BoolVar(&fourOnly, "4", false, "resolve IPv4 addresses only")
 	flag.BoolVar(&sixOnly, "6", false, "resolve IPv6 addresses only")
+	flag.DurationVar(&interval, "interval", 5*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
 
 	flag.Usage = usage
 }
@@ -113,23 +115,14 @@ func main() {
 		os.Exit(-1)
 	}
 
-	args := flag.Args()
-	if len(args) != 1 {
-		flag.Usage()
-		os.Exit(2)
+	for _, httpConfig := range config.HttpServers {
+		var querier Querier = Querier{
+			httpServerConfig: &httpConfig,
+			url:              *parseURL(httpConfig.Url),
+		}
+
+		querier.Run(&interval)
 	}
-
-	if (httpMethod == "POST" || httpMethod == "PUT") && postBody == "" {
-		log.Fatal("must supply post body using -d when POST or PUT is used")
-	}
-
-	if onlyHeader {
-		httpMethod = "HEAD"
-	}
-
-	url := parseURL(args[0])
-
-	visit(url)
 }
 
 // readClientCert - helper function to read client certificate
