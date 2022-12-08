@@ -1,3 +1,4 @@
+// main package of the httpstat-metrics package
 package main
 
 import (
@@ -15,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/exp/slog"
 
 	"gopkg.in/yaml.v3"
 )
@@ -70,15 +73,15 @@ func usage() {
 }
 
 type HTTPServerConfig struct {
-	Url         string            `yaml:"url"`
-	IpVersion   string            `yaml:"ipVersion"`
+	URL         string            `yaml:"url"`
+	IPVersion   string            `yaml:"ipVersion"`
 	Host        string            `yaml:"host"`
-	HttpHeaders http.Header       `yaml:"headers"`
+	HTTPHeaders http.Header       `yaml:"headers"`
 	ExtraLabels map[string]string `yaml:"extraLabels"` // TODO: check VM instrumentation if there is a label
 }
 
 type Config struct {
-	HttpServers []HTTPServerConfig `yaml:"endpoints"`
+	HTTPServers []HTTPServerConfig `yaml:"endpoints"`
 	Test        string             `yaml:"test"`
 }
 
@@ -90,30 +93,32 @@ func (c *Config) readConf() {
 	}
 	err = yaml.Unmarshal(yamlFile, &c)
 	if err != nil {
-		log.Fatalf("Unmarshal error: %v", err)
+		slog.Log(slog.ErrorLevel, "Unmarshal error", err)
 	}
 }
 
 func main() {
 	flag.Parse()
 
+	lgr := slog.New(slog.NewTextHandler(os.Stdout))
+	lgr = lgr.With("app", "httpstat-metrics", "version", version)
+	slog.SetDefault(lgr)
+
 	var config Config
+
 	config.readConf()
 
-	if showVersion {
-		fmt.Printf("%s %s (runtime: %s)\n", os.Args[0], version, runtime.Version())
-		os.Exit(0)
-	}
+	lgr.Info("starting up", "runtime-version", runtime.Version())
 
 	if fourOnly && sixOnly {
 		fmt.Fprintf(os.Stderr, "%s: Only one of -4 and -6 may be specified\n", os.Args[0])
 		os.Exit(-1)
 	}
 
-	for _, httpConfig := range config.HttpServers {
-		var querier Querier = Querier{
-			httpServerConfig: &httpConfig,
-			url:              *parseURL(httpConfig.Url),
+	for idx, httpConfig := range config.HTTPServers {
+		var querier = Querier{
+			httpServerConfig: &config.HTTPServers[idx],
+			url:              *parseURL(httpConfig.URL),
 		}
 
 		querier.Run(&interval)
@@ -126,6 +131,7 @@ func readClientCert(filename string) []tls.Certificate {
 	if filename == "" {
 		return nil
 	}
+
 	var (
 		pkeyPem []byte
 		certPem []byte

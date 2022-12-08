@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/metrics"
+	"golang.org/x/exp/slog"
 )
 
 const (
@@ -24,12 +25,11 @@ type Querier struct {
 	httpServerConfig *HTTPServerConfig
 	labels           string
 	url              url.URL
-	tlsClientConfig  *tls.Config
 	tr               *http.Transport
+	logger           *slog.Logger
 }
 
 func (q *Querier) Run(interval *time.Duration) {
-
 	q.tr = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
@@ -39,8 +39,7 @@ func (q *Querier) Run(interval *time.Duration) {
 		ForceAttemptHTTP2:     true,
 	}
 
-	switch q.url.Scheme {
-	case "https":
+	if q.url.Scheme == "https" {
 		host, _, err := net.SplitHostPort(q.url.Host)
 		if err != nil {
 			host = q.url.Host
@@ -57,13 +56,13 @@ func (q *Querier) Run(interval *time.Duration) {
 	labelsMap := q.httpServerConfig.ExtraLabels
 	labelsMap["host"] = q.url.Host
 	labelsMap["scheme"] = q.url.Scheme
-	labelsMap["ip_version"] = q.httpServerConfig.IpVersion
+	labelsMap["ip_version"] = q.httpServerConfig.IPVersion
 
 	q.labels = "{"
 	for label, value := range q.httpServerConfig.ExtraLabels {
 		q.labels += fmt.Sprintf("%s=%q,", label, value)
-
 	}
+
 	q.labels = q.labels[:len(q.labels)-1] // remove trailing comma
 	q.labels += "}"
 
@@ -89,16 +88,19 @@ func (q *Querier) Run(interval *time.Duration) {
 // visit visits a url and times the interaction.
 // If the response is a 30x, visit follows the redirect.
 func (q *Querier) visit() {
-	req, err := http.NewRequest("GET", q.url.String(), nil)
+	req, err := http.NewRequest("GET", q.url.String(), http.NoBody)
 	if err != nil {
 		log.Fatalf("unable to create request: %v", err)
 	}
-	req.Header = q.httpServerConfig.HttpHeaders
+
+	req.Header = q.httpServerConfig.HTTPHeaders
 	if q.httpServerConfig.Host != "" {
 		req.Host = q.httpServerConfig.Host
 	}
 
-	var getConnTime, dnsStartTime, dnsDoneTime, connectStartTime, connectDoneTime, gotConnTime, gotFirstResponseByteTime, tlsHandshakeStartTime, tlsHandshakeStopTime time.Time
+	var getConnTime, dnsStartTime, dnsDoneTime, connectStartTime, connectDoneTime,
+		gotConnTime, gotFirstResponseByteTime, tlsHandshakeStartTime,
+		tlsHandshakeStopTime time.Time
 
 	trace := &httptrace.ClientTrace{
 		GetConn:  func(hostPort string) { getConnTime = time.Now() },
@@ -115,7 +117,6 @@ func (q *Querier) visit() {
 				log.Fatalf("unable to connect to host %v: %v", addr, err)
 			}
 			connectDoneTime = time.Now()
-
 		},
 		GotConn:              func(_ httptrace.GotConnInfo) { gotConnTime = time.Now() },
 		GotFirstResponseByte: func() { gotFirstResponseByteTime = time.Now() },
@@ -133,30 +134,22 @@ func (q *Querier) visit() {
 		q.tr.DialContext = dialContext("tcp")
 	}
 
-	switch q.url.Scheme {
-	case "https":
-		q.tr.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: insecure,
-			Certificates:       readClientCert(clientCertFile),
-			MinVersion:         tls.VersionTLS12,
-		}
-	}
-
 	client := &http.Client{
 		Transport: q.tr,
 	}
 
 	defer q.tr.CloseIdleConnections()
+
 	resp, err := client.Do(req)
 	if err != nil {
 		// log.Fatalf("failed to read response: %v", err)
 		return
 	}
 
+	defer resp.Body.Close()
 	bodySize, _ := io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-
 	postBodyReadTime := time.Now() // after read body
+
 	if dnsStartTime.IsZero() {
 		// we skipped DNS
 		dnsStartTime = dnsDoneTime
