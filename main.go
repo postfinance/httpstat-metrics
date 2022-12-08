@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/exp/slog"
@@ -119,9 +121,28 @@ func main() {
 		var querier = Querier{
 			httpServerConfig: &config.HTTPServers[idx],
 			url:              *parseURL(httpConfig.URL),
+			lgr:              lgr,
 		}
 
-		querier.Run(&interval)
+		go querier.Run(&interval)
+	}
+
+	catchSignal()
+}
+
+func catchSignal() {
+
+	terminateSignals := make(chan os.Signal, 1)
+
+	// TODO: signal with Context
+	signal.Notify(terminateSignals, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
+
+	for {
+		select {
+		case s := <-terminateSignals:
+			log.Println("Got one of stop signals, shutting down server gracefully, SIGNAL NAME :", s)
+			break //break is not necessary to add here as if server is closed our main function will end.
+		}
 	}
 }
 

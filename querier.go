@@ -19,6 +19,8 @@ import (
 
 const (
 	dnsLookupDuration = "httpstat_dns_lookup_duation_seconds"
+	lookupTotalName   = "httpstat_lookup_total"
+	errorTotalName    = "httpstat_error_total"
 )
 
 type Querier struct {
@@ -26,10 +28,11 @@ type Querier struct {
 	labels           string
 	url              url.URL
 	tr               *http.Transport
-	logger           *slog.Logger
+	lgr              *slog.Logger
 }
 
-func (q *Querier) Run(interval *time.Duration) {
+func (q *Querier) init() {
+
 	q.tr = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
@@ -53,27 +56,48 @@ func (q *Querier) Run(interval *time.Duration) {
 		}
 	}
 
+	switch q.httpServerConfig.IPVersion {
+	case "4":
+		q.tr.DialContext = dialContext("tcp4")
+	case "6":
+		q.tr.DialContext = dialContext("tcp6")
+	case "any":
+		q.tr.DialContext = dialContext("tcp")
+	default:
+		log.Fatal("")
+	}
+
+	q.lgr = q.lgr.With(
+		"host", q.url.Host,
+		"scheme", q.url.Scheme,
+		"ip_version", q.httpServerConfig.IPVersion,
+	)
+
 	labelsMap := q.httpServerConfig.ExtraLabels
 	labelsMap["host"] = q.url.Host
 	labelsMap["scheme"] = q.url.Scheme
 	labelsMap["ip_version"] = q.httpServerConfig.IPVersion
 
-	q.labels = "{"
 	for label, value := range q.httpServerConfig.ExtraLabels {
 		q.labels += fmt.Sprintf("%s=%q,", label, value)
 	}
 
-	q.labels = q.labels[:len(q.labels)-1] // remove trailing comma
-	q.labels += "}"
+	q.labels = q.labels[0 : len(q.labels)-1]
 
-	metrics.GetOrCreateCounter(fmt.Sprintf("%s%s", dnsLookupDuration, q.labels)).Set(0)
+	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, q.labels)).Set(0)
+	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorTotalName, q.labels)).Set(0)
+}
+
+// Run starts the querier at the specified interval, with a random jitter of 0-500ms
+func (q *Querier) Run(interval *time.Duration) {
+	q.init()
 
 	//nolint:gosec // No need for a cryptographic secure random number since this is only used for a jitter.
 	jitter := time.Duration(rand.Float64() * float64(500*time.Millisecond))
 
-	// q.l.Infow("start delayed",
-	// 	"jitter", jitter,
-	// )
+	q.lgr.Info("start delayed",
+		"jitter", jitter,
+	)
 
 	time.Sleep(jitter)
 
@@ -88,10 +112,7 @@ func (q *Querier) Run(interval *time.Duration) {
 // visit visits a url and times the interaction.
 // If the response is a 30x, visit follows the redirect.
 func (q *Querier) visit() {
-	req, err := http.NewRequest("GET", q.url.String(), http.NoBody)
-	if err != nil {
-		log.Fatalf("unable to create request: %v", err)
-	}
+	req, _ := http.NewRequest("GET", q.url.String(), http.NoBody) // we ignore the err as the URL has already been parsed and is therefore valid
 
 	req.Header = q.httpServerConfig.HTTPHeaders
 	if q.httpServerConfig.Host != "" {
@@ -108,14 +129,10 @@ func (q *Querier) visit() {
 		DNSDone:  func(_ httptrace.DNSDoneInfo) { dnsDoneTime = time.Now() },
 		ConnectStart: func(_, _ string) {
 			if connectStartTime.IsZero() {
-				// connecting to IP
 				connectStartTime = time.Now()
 			}
 		},
 		ConnectDone: func(net, addr string, err error) {
-			if err != nil {
-				log.Fatalf("unable to connect to host %v: %v", addr, err)
-			}
 			connectDoneTime = time.Now()
 		},
 		GotConn:              func(_ httptrace.GotConnInfo) { gotConnTime = time.Now() },
@@ -125,15 +142,6 @@ func (q *Querier) visit() {
 	}
 	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
 
-	switch {
-	case fourOnly:
-		q.tr.DialContext = dialContext("tcp4")
-	case sixOnly:
-		q.tr.DialContext = dialContext("tcp6")
-	default:
-		q.tr.DialContext = dialContext("tcp")
-	}
-
 	client := &http.Client{
 		Transport: q.tr,
 	}
@@ -141,19 +149,21 @@ func (q *Querier) visit() {
 	defer q.tr.CloseIdleConnections()
 
 	resp, err := client.Do(req)
+	l := q.labels
+
 	if err != nil {
-		// log.Fatalf("failed to read response: %v", err)
+		metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, l)).Inc()
+		metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorTotalName, l)).Inc()
+
 		return
 	}
+
+	l += fmt.Sprintf("%s=%q", "status_code", resp.StatusCode)
+	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, l)).Inc()
 
 	defer resp.Body.Close()
 	bodySize, _ := io.Copy(io.Discard, resp.Body)
 	postBodyReadTime := time.Now() // after read body
-
-	if dnsStartTime.IsZero() {
-		// we skipped DNS
-		dnsStartTime = dnsDoneTime
-	}
 
 	dnsLookup := dnsDoneTime.Sub(dnsStartTime)
 	tcpConnection := connectDoneTime.Sub(connectStartTime)
@@ -163,7 +173,4 @@ func (q *Querier) visit() {
 	totalDuration := postBodyReadTime.Sub(getConnTime)
 
 	fmt.Println(bodySize, dnsLookup, tcpConnection, tlsHandshake, serverProcessing, contentTransfer, totalDuration)
-	// httpstat_error_total{code="404"}
-	// httpstat_lookup_total{code="404"}
-
 }
