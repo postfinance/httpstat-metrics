@@ -23,6 +23,8 @@ const (
 	errorTotalName    = "httpstat_error_total"
 )
 
+// Querier A querier will periodically measure the host specified in its
+// config, and will export the observations as prometheus metrics
 type Querier struct {
 	httpServerConfig *HTTPServerConfig
 	labels           string
@@ -32,7 +34,6 @@ type Querier struct {
 }
 
 func (q *Querier) init() {
-
 	q.tr = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
@@ -50,7 +51,7 @@ func (q *Querier) init() {
 
 		q.tr.TLSClientConfig = &tls.Config{
 			ServerName:         host,
-			InsecureSkipVerify: insecure,
+			InsecureSkipVerify: insecure, //nolint:gosec // not a security concern as we are not actually sending/reading data
 			Certificates:       readClientCert(clientCertFile),
 			MinVersion:         tls.VersionTLS12,
 		}

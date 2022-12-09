@@ -7,7 +7,6 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -24,43 +23,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+//nolint:gochecknoglobals // TODO: stop using globals for those flags
 var (
 	// Command line flags.
-	configFile      string
-	httpMethod      string
-	postBody        string
-	followRedirects bool
-	onlyHeader      bool
-	insecure        bool
-	saveOutput      bool
-	outputFile      string
-	showVersion     bool
-	clientCertFile  string
-	fourOnly        bool
-	sixOnly         bool
-	interval        time.Duration
-
-	// number of redirects followed
-	redirectsFollowed int
+	configFile     string
+	clientCertFile string
+	insecure       bool
+	showVersion    bool
+	interval       time.Duration
 
 	version = "devel" // for -v flag, updated during the release process with -ldflags=-X=main.version=...
 )
-
-const maxRedirects = 10
-
-func init() {
-	flag.StringVar(&configFile, "config", "config.yaml", "path to the configuration file")
-	flag.BoolVar(&insecure, "k", false, "allow insecure SSL connections")
-	flag.BoolVar(&saveOutput, "O", false, "save body as remote filename")
-	flag.StringVar(&outputFile, "o", "", "output file for body")
-	flag.BoolVar(&showVersion, "v", false, "print version number")
-	flag.StringVar(&clientCertFile, "E", "", "client cert file for tls config")
-	flag.BoolVar(&fourOnly, "4", false, "resolve IPv4 addresses only")
-	flag.BoolVar(&sixOnly, "6", false, "resolve IPv6 addresses only")
-	flag.DurationVar(&interval, "interval", 1*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
-
-	flag.Usage = usage
-}
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS] URL\n\n", os.Args[0])
@@ -74,6 +47,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  NO_PROXY      comma-separated list of hosts to exclude from proxy")
 }
 
+// HTTPServerConfig contains the config for each Host we will query
 type HTTPServerConfig struct {
 	URL         string            `yaml:"url"`
 	IPVersion   string            `yaml:"ipVersion"`
@@ -82,17 +56,18 @@ type HTTPServerConfig struct {
 	ExtraLabels map[string]string `yaml:"extraLabels"` // TODO: check VM instrumentation if there is a label
 }
 
+// Config contains the config of the httpstat-metrics app
 type Config struct {
 	HTTPServers []HTTPServerConfig `yaml:"endpoints"`
 	Test        string             `yaml:"test"`
 }
 
 func (c *Config) readConf() {
-
-	yamlFile, err := ioutil.ReadFile(configFile)
+	yamlFile, err := os.ReadFile(configFile) //nolint:gosec // used to load and unmarshal a text config file
 	if err != nil {
 		log.Fatalf("couldn't open the config file %s, error message: #%v ", configFile, err)
 	}
+
 	err = yaml.Unmarshal(yamlFile, &c)
 	if err != nil {
 		slog.Log(slog.ErrorLevel, "Unmarshal error", err)
@@ -100,6 +75,14 @@ func (c *Config) readConf() {
 }
 
 func main() {
+	flag.StringVar(&configFile, "config", "config.yaml", "path to the configuration file")
+	flag.StringVar(&clientCertFile, "E", "", "client cert file for tls config")
+	flag.BoolVar(&insecure, "k", false, "allow insecure SSL connections")
+	flag.BoolVar(&showVersion, "v", false, "print version number")
+	flag.DurationVar(&interval, "interval", 1*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
+
+	flag.Usage = usage
+
 	flag.Parse()
 
 	lgr := slog.New(slog.NewTextHandler(os.Stdout))
@@ -112,11 +95,6 @@ func main() {
 
 	lgr.Info("starting up", "runtime-version", runtime.Version())
 
-	if fourOnly && sixOnly {
-		fmt.Fprintf(os.Stderr, "%s: Only one of -4 and -6 may be specified\n", os.Args[0])
-		os.Exit(-1)
-	}
-
 	for idx, httpConfig := range config.HTTPServers {
 		var querier = Querier{
 			httpServerConfig: &config.HTTPServers[idx],
@@ -127,23 +105,17 @@ func main() {
 		go querier.Run(&interval)
 	}
 
-	catchSignal()
-}
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
 
-func catchSignal() {
-
-	terminateSignals := make(chan os.Signal, 1)
-
-	// TODO: signal with Context
-	signal.Notify(terminateSignals, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
-
-	for {
-		select {
-		case s := <-terminateSignals:
-			log.Println("Got one of stop signals, shutting down server gracefully, SIGNAL NAME :", s)
-			break //break is not necessary to add here as if server is closed our main function will end.
-		}
-	}
+	go func() {
+		s := <-sigc
+		lgr.Info("received a signal .. exiting", "signal", s.String())
+	}()
 }
 
 // readClientCert - helper function to read client certificate
@@ -159,7 +131,7 @@ func readClientCert(filename string) []tls.Certificate {
 	)
 
 	// read client certificate file (must include client private key and certificate)
-	certFileBytes, err := ioutil.ReadFile(filename)
+	certFileBytes, err := os.ReadFile(filename) //nolint:gosec // we read the cert from the given filename
 	if err != nil {
 		log.Fatalf("failed to read client certificate file: %v", err)
 	}
@@ -169,11 +141,13 @@ func readClientCert(filename string) []tls.Certificate {
 		if block == nil {
 			break
 		}
+
 		certFileBytes = rest
 
 		if strings.HasSuffix(block.Type, "PRIVATE KEY") {
 			pkeyPem = pem.EncodeToMemory(block)
 		}
+
 		if strings.HasSuffix(block.Type, "CERTIFICATE") {
 			certPem = pem.EncodeToMemory(block)
 		}
@@ -183,6 +157,7 @@ func readClientCert(filename string) []tls.Certificate {
 	if err != nil {
 		log.Fatalf("unable to load client cert and key pair: %v", err)
 	}
+
 	return []tls.Certificate{cert}
 }
 
@@ -191,18 +166,20 @@ func parseURL(uri string) *url.URL {
 		uri = "//" + uri
 	}
 
-	url, err := url.Parse(uri)
+	parsedURL, err := url.Parse(uri)
+
 	if err != nil {
 		log.Fatalf("could not parse url %q: %v", uri, err)
 	}
 
-	if url.Scheme == "" {
-		url.Scheme = "http"
-		if !strings.HasSuffix(url.Host, ":80") {
-			url.Scheme += "s"
+	if parsedURL.Scheme == "" {
+		parsedURL.Scheme = "http"
+		if !strings.HasSuffix(parsedURL.Host, ":80") {
+			parsedURL.Scheme += "s"
 		}
 	}
-	return url
+
+	return parsedURL
 }
 
 func dialContext(network string) func(ctx context.Context, network, addr string) (net.Conn, error) {
