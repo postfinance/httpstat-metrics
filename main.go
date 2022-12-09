@@ -12,12 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/VictoriaMetrics/metrics"
 	"golang.org/x/exp/slog"
 
 	"gopkg.in/yaml.v3"
@@ -30,6 +29,7 @@ var (
 	clientCertFile string
 	insecure       bool
 	showVersion    bool
+	debug          bool
 	interval       time.Duration
 
 	version = "devel" // for -v flag, updated during the release process with -ldflags=-X=main.version=...
@@ -65,7 +65,7 @@ type Config struct {
 func (c *Config) readConf() {
 	yamlFile, err := os.ReadFile(configFile) //nolint:gosec // used to load and unmarshal a text config file
 	if err != nil {
-		log.Fatalf("couldn't open the config file %s, error message: #%v ", configFile, err)
+		log.Fatalf("couldn't open the config file %s, error message: %v ", configFile, err)
 	}
 
 	err = yaml.Unmarshal(yamlFile, &c)
@@ -79,13 +79,21 @@ func main() {
 	flag.StringVar(&clientCertFile, "E", "", "client cert file for tls config")
 	flag.BoolVar(&insecure, "k", false, "allow insecure SSL connections")
 	flag.BoolVar(&showVersion, "v", false, "print version number")
-	flag.DurationVar(&interval, "interval", 1*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
+	flag.BoolVar(&debug, "debug", false, "increase logging verbosity")
+	flag.DurationVar(&interval, "interval", 5*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
 
 	flag.Usage = usage
 
 	flag.Parse()
 
-	lgr := slog.New(slog.NewTextHandler(os.Stdout))
+	var logLevel slog.Leveler
+	if debug {
+		logLevel = slog.DebugLevel
+	} else {
+		logLevel = slog.InfoLevel
+	}
+
+	lgr := slog.New(slog.HandlerOptions{Level: logLevel}.NewTextHandler(os.Stdout))
 	lgr = lgr.With("app", "httpstat-metrics", "version", version)
 	slog.SetDefault(lgr)
 
@@ -105,17 +113,21 @@ func main() {
 		go querier.Run(&interval)
 	}
 
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc,
-		syscall.SIGHUP,
-		syscall.SIGINT,
-		syscall.SIGTERM,
-		syscall.SIGQUIT)
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
+		metrics.WritePrometheus(w, false)
+	})
 
-	go func() {
-		s := <-sigc
-		lgr.Info("received a signal .. exiting", "signal", s.String())
-	}()
+	srv := &http.Server{
+		ReadTimeout:       1 * time.Second,
+		WriteTimeout:      1 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 2 * time.Second,
+		Handler:           http.DefaultServeMux,
+		Addr:              ":9090",
+	}
+
+	err := srv.ListenAndServe()
+	lgr.Info("http server finished serving", "error", err)
 }
 
 // readClientCert - helper function to read client certificate
@@ -155,7 +167,7 @@ func readClientCert(filename string) []tls.Certificate {
 
 	cert, err := tls.X509KeyPair(certPem, pkeyPem)
 	if err != nil {
-		log.Fatalf("unable to load client cert and key pair: %v", err)
+		log.Fatal(err)
 	}
 
 	return []tls.Certificate{cert}

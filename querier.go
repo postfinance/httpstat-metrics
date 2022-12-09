@@ -5,12 +5,12 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/VictoriaMetrics/metrics"
@@ -18,9 +18,14 @@ import (
 )
 
 const (
-	dnsLookupDuration = "httpstat_dns_lookup_duation_seconds"
-	lookupTotalName   = "httpstat_lookup_total"
-	errorTotalName    = "httpstat_error_total"
+	lookupTotalName              = "httpstat_lookup_total"
+	errorTotalName               = "httpstat_error_total"
+	dnsLookupDurationName        = "httpstat_dns_lookup_duration_seconds"
+	tcpConnDurationName          = "httpstat_tcp_connection_duration_seconds"
+	tlsHandshakeDurationName     = "httpstat_tls_handshake_duration_seconds"
+	serverProcessingDurationName = "httpstat_server_processing_duration_seconds"
+	contentTransferDurationName  = "httpstat_content_transfer_duration_seconds"
+	totalDurationDurationName    = "httpstat_total_duration_seconds"
 )
 
 // Querier A querier will periodically measure the host specified in its
@@ -33,7 +38,13 @@ type Querier struct {
 	lgr              *slog.Logger
 }
 
-func (q *Querier) init() {
+func (q *Querier) init() error {
+	q.lgr = q.lgr.With(
+		"host", q.url.Host,
+		"scheme", q.url.Scheme,
+		"ip_version", q.httpServerConfig.IPVersion,
+	)
+
 	q.tr = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
@@ -65,14 +76,8 @@ func (q *Querier) init() {
 	case "any":
 		q.tr.DialContext = dialContext("tcp")
 	default:
-		log.Fatal("")
+		return fmt.Errorf("ip version not configured properly. must be either 4, 6, any")
 	}
-
-	q.lgr = q.lgr.With(
-		"host", q.url.Host,
-		"scheme", q.url.Scheme,
-		"ip_version", q.httpServerConfig.IPVersion,
-	)
 
 	labelsMap := q.httpServerConfig.ExtraLabels
 	labelsMap["host"] = q.url.Host
@@ -87,11 +92,18 @@ func (q *Querier) init() {
 
 	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, q.labels)).Set(0)
 	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorTotalName, q.labels)).Set(0)
+
+	return nil
 }
 
 // Run starts the querier at the specified interval, with a random jitter of 0-500ms
 func (q *Querier) Run(interval *time.Duration) {
-	q.init()
+	err := q.init()
+
+	if err != nil {
+		q.lgr.Error("querier initialization failed", err)
+		return
+	}
 
 	//nolint:gosec // No need for a cryptographic secure random number since this is only used for a jitter.
 	jitter := time.Duration(rand.Float64() * float64(500*time.Millisecond))
@@ -121,11 +133,15 @@ func (q *Querier) visit() {
 	}
 
 	var getConnTime, dnsStartTime, dnsDoneTime, connectStartTime, connectDoneTime,
-		gotConnTime, gotFirstResponseByteTime, tlsHandshakeStartTime,
+		gotConnTime, lastGotConnTime, gotFirstResponseByteTime, tlsHandshakeStartTime,
 		tlsHandshakeStopTime time.Time
 
 	trace := &httptrace.ClientTrace{
-		GetConn:  func(hostPort string) { getConnTime = time.Now() },
+		GetConn: func(_ string) {
+			if getConnTime.IsZero() {
+				getConnTime = time.Now()
+			}
+		},
 		DNSStart: func(_ httptrace.DNSStartInfo) { dnsStartTime = time.Now() },
 		DNSDone:  func(_ httptrace.DNSDoneInfo) { dnsDoneTime = time.Now() },
 		ConnectStart: func(_, _ string) {
@@ -133,13 +149,24 @@ func (q *Querier) visit() {
 				connectStartTime = time.Now()
 			}
 		},
-		ConnectDone: func(net, addr string, err error) {
-			connectDoneTime = time.Now()
+		ConnectDone: func(_, _ string, _ error) {
+			if connectDoneTime.IsZero() {
+				connectDoneTime = time.Now()
+			}
+			lastGotConnTime = time.Now()
 		},
-		GotConn:              func(_ httptrace.GotConnInfo) { gotConnTime = time.Now() },
-		GotFirstResponseByte: func() { gotFirstResponseByteTime = time.Now() },
-		TLSHandshakeStart:    func() { tlsHandshakeStartTime = time.Now() },
-		TLSHandshakeDone:     func(_ tls.ConnectionState, _ error) { tlsHandshakeStopTime = time.Now() },
+		TLSHandshakeStart: func() { tlsHandshakeStartTime = time.Now() },
+		TLSHandshakeDone:  func(_ tls.ConnectionState, _ error) { tlsHandshakeStopTime = time.Now() },
+		GotConn: func(_ httptrace.GotConnInfo) {
+			if gotConnTime.IsZero() {
+				gotConnTime = time.Now()
+			}
+			lastGotConnTime = time.Now()
+		},
+		GotFirstResponseByte: func() {
+			// we only care about the last time it happens (in case there were redirects for example)
+			gotFirstResponseByteTime = time.Now()
+		},
 	}
 	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
 
@@ -159,19 +186,41 @@ func (q *Querier) visit() {
 		return
 	}
 
-	l += fmt.Sprintf("%s=%q", "status_code", resp.StatusCode)
+	l += fmt.Sprintf(",%s=%q", "status_code", strconv.Itoa(resp.StatusCode))
 	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, l)).Inc()
 
 	defer resp.Body.Close()
 	bodySize, _ := io.Copy(io.Discard, resp.Body)
-	postBodyReadTime := time.Now() // after read body
+	postBodyReadTime := time.Now()
+	l += fmt.Sprintf("%s=%q", ",body_size", strconv.FormatInt(bodySize, 10))
 
-	dnsLookup := dnsDoneTime.Sub(dnsStartTime)
-	tcpConnection := connectDoneTime.Sub(connectStartTime)
-	tlsHandshake := tlsHandshakeStopTime.Sub(tlsHandshakeStartTime)
-	serverProcessing := gotFirstResponseByteTime.Sub(gotConnTime)
-	contentTransfer := postBodyReadTime.Sub(gotFirstResponseByteTime)
+	dnsLookupDuration := dnsDoneTime.Sub(dnsStartTime)
+	tcpConnectDuration := connectDoneTime.Sub(connectStartTime)
+	tlsHandshakeDuration := tlsHandshakeStopTime.Sub(tlsHandshakeStartTime)
+	serverProcessingDuration := gotFirstResponseByteTime.Sub(lastGotConnTime)
+	contentTransferDuration := postBodyReadTime.Sub(gotFirstResponseByteTime)
 	totalDuration := postBodyReadTime.Sub(getConnTime)
 
-	fmt.Println(bodySize, dnsLookup, tcpConnection, tlsHandshake, serverProcessing, contentTransfer, totalDuration)
+	if !dnsStartTime.IsZero() { // we only record this metric if a DNS lookup was actually made
+		metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", dnsLookupDurationName, l)).Update(float64(dnsLookupDuration))
+	}
+
+	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", tcpConnDurationName, l)).Update(float64(tcpConnectDuration))
+
+	if !tlsHandshakeStartTime.IsZero() { // we only record this metrics when a TLS handshake was done
+		metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", tlsHandshakeDurationName, l)).Update(float64(tlsHandshakeDuration))
+	}
+
+	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", serverProcessingDurationName, l)).Update(float64(serverProcessingDuration))
+	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", contentTransferDurationName, l)).Update(float64(contentTransferDuration))
+	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", totalDurationDurationName, l)).Update(float64(totalDuration))
+
+	q.lgr.Debug("new measurement",
+		dnsLookupDurationName, dnsLookupDuration,
+		tcpConnDurationName, tcpConnectDuration,
+		tlsHandshakeDurationName, tlsHandshakeDuration,
+		serverProcessingDurationName, serverProcessingDuration,
+		contentTransferDurationName, contentTransferDuration,
+		totalDurationDurationName, totalDuration,
+	)
 }
