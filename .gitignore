@@ -26,3 +26,4 @@ _testmain.go
 httpstat
 
 ./config.yaml
+dist/
