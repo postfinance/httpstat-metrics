@@ -1,4 +1,4 @@
-module github.com/davecheney/httpstat
+module github.com/postfinance/httpstat-metrics
 
 go 1.15
 
