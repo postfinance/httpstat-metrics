@@ -202,18 +202,18 @@ func (q *Querier) visit() {
 	totalDuration := postBodyReadTime.Sub(getConnTime)
 
 	if !dnsStartTime.IsZero() { // we only record this metric if a DNS lookup was actually made
-		metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", dnsLookupDurationName, l)).Update(float64(dnsLookupDuration))
+		metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", dnsLookupDurationName, l)).Update(dnsLookupDuration.Seconds())
 	}
 
-	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", tcpConnDurationName, l)).Update(float64(tcpConnectDuration))
+	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", tcpConnDurationName, l)).Update(tcpConnectDuration.Seconds())
 
 	if !tlsHandshakeStartTime.IsZero() { // we only record this metrics when a TLS handshake was done
-		metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", tlsHandshakeDurationName, l)).Update(float64(tlsHandshakeDuration))
+		metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", tlsHandshakeDurationName, l)).Update(tlsHandshakeDuration.Seconds())
 	}
 
-	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", serverProcessingDurationName, l)).Update(float64(serverProcessingDuration))
-	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", contentTransferDurationName, l)).Update(float64(contentTransferDuration))
-	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", totalDurationDurationName, l)).Update(float64(totalDuration))
+	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", serverProcessingDurationName, l)).Update(serverProcessingDuration.Seconds())
+	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", contentTransferDurationName, l)).Update(contentTransferDuration.Seconds())
+	metrics.GetOrCreateHistogram(fmt.Sprintf("%s{%s}", totalDurationDurationName, l)).Update(totalDuration.Seconds())
 
 	q.lgr.Debug("new measurement",
 		dnsLookupDurationName, dnsLookupDuration,
