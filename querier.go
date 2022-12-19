@@ -19,7 +19,7 @@ import (
 
 const (
 	lookupTotalName              = "httpstat_lookup_total"
-	errorTotalName               = "httpstat_error_total"
+	errorsTotalName              = "httpstat_errors_total"
 	dnsLookupDurationName        = "httpstat_dns_lookup_duration_seconds"
 	tcpConnDurationName          = "httpstat_tcp_connection_duration_seconds"
 	tlsHandshakeDurationName     = "httpstat_tls_handshake_duration_seconds"
@@ -91,7 +91,7 @@ func (q *Querier) init() error {
 	q.labels = q.labels[0 : len(q.labels)-1]
 
 	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, q.labels)).Set(0)
-	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorTotalName, q.labels)).Set(0)
+	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorsTotalName, q.labels)).Set(0)
 
 	return nil
 }
@@ -181,7 +181,7 @@ func (q *Querier) visit() {
 
 	if err != nil {
 		metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, l)).Inc()
-		metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorTotalName, l)).Inc()
+		metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorsTotalName, l)).Inc()
 
 		return
 	}
