@@ -2,15 +2,12 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/pem"
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -22,16 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-//nolint:gochecknoglobals // TODO: stop using globals for those flags
 var (
-	// Command line flags.
-	configFile     string
-	clientCertFile string
-	insecure       bool
-	showVersion    bool
-	debug          bool
-	interval       time.Duration
-
 	version = "devel" // for -v flag, updated during the release process with -ldflags=-X=main.version=...
 )
 
@@ -62,7 +50,7 @@ type Config struct {
 	Test        string             `yaml:"test"`
 }
 
-func (c *Config) readConf() {
+func (c *Config) readConf(configFile string) {
 	yamlFile, err := os.ReadFile(configFile) //nolint:gosec // used to load and unmarshal a text config file
 	if err != nil {
 		log.Fatalf("couldn't open the config file %s, error message: %v ", configFile, err)
@@ -75,19 +63,18 @@ func (c *Config) readConf() {
 }
 
 func main() {
-	flag.StringVar(&configFile, "config", "config.yaml", "path to the configuration file")
-	flag.StringVar(&clientCertFile, "E", "", "client cert file for tls config")
-	flag.BoolVar(&insecure, "k", false, "allow insecure SSL connections")
-	flag.BoolVar(&showVersion, "v", false, "print version number")
-	flag.BoolVar(&debug, "debug", false, "increase logging verbosity")
-	flag.DurationVar(&interval, "interval", 5*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
+	configFile := flag.String("config", "config.yaml", "path to the configuration file")
+	certFile := flag.String("E", "", "client cert file for tls config")
+	insecure := flag.Bool("k", false, "allow insecure SSL connections")
+	debug := flag.Bool("debug", false, "increase logging verbosity")
+	interval := flag.Duration("interval", 5*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
 
 	flag.Usage = usage
 
 	flag.Parse()
 
 	var logLevel slog.Leveler
-	if debug {
+	if *debug {
 		logLevel = slog.DebugLevel
 	} else {
 		logLevel = slog.InfoLevel
@@ -96,21 +83,22 @@ func main() {
 	lgr := slog.New(slog.HandlerOptions{Level: logLevel}.NewTextHandler(os.Stdout))
 	lgr = lgr.With("app", "httpstat-metrics", "version", version)
 	slog.SetDefault(lgr)
+	lgr.Info("starting up", "runtime-version", runtime.Version())
 
 	var config Config
 
-	config.readConf()
+	config.readConf(*configFile)
 
-	lgr.Info("starting up", "runtime-version", runtime.Version())
+	tlsCert := readClientCert(*certFile)
 
-	for idx, httpConfig := range config.HTTPServers {
-		var querier = Querier{
-			httpServerConfig: &config.HTTPServers[idx],
-			url:              *parseURL(httpConfig.URL),
-			lgr:              lgr,
+	for _, httpConfig := range config.HTTPServers {
+		q, err := newQuerier(httpConfig, lgr, *insecure, tlsCert)
+		if err != nil {
+			lgr.Error("unable to create new querier", err)
+			continue
 		}
 
-		go querier.Run(&interval)
+		go q.Run(interval)
 	}
 
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
@@ -171,35 +159,4 @@ func readClientCert(filename string) []tls.Certificate {
 	}
 
 	return []tls.Certificate{cert}
-}
-
-func parseURL(uri string) *url.URL {
-	if !strings.Contains(uri, "://") && !strings.HasPrefix(uri, "//") {
-		uri = "//" + uri
-	}
-
-	parsedURL, err := url.Parse(uri)
-
-	if err != nil {
-		log.Fatalf("could not parse url %q: %v", uri, err)
-	}
-
-	if parsedURL.Scheme == "" {
-		parsedURL.Scheme = "http"
-		if !strings.HasSuffix(parsedURL.Host, ":80") {
-			parsedURL.Scheme += "s"
-		}
-	}
-
-	return parsedURL
-}
-
-func dialContext(network string) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return func(ctx context.Context, _, addr string) (net.Conn, error) {
-		return (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-			DualStack: false,
-		}).DialContext(ctx, network, addr)
-	}
 }

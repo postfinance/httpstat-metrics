@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/metrics"
@@ -40,7 +42,14 @@ type Querier struct {
 	mS               *metrics.Set
 }
 
-func (q *Querier) init() error {
+func newQuerier(config HTTPServerConfig, lgr *slog.Logger, insecure bool, tlsCerts []tls.Certificate) (*Querier, error) {
+	var q = Querier{
+		ctx:              context.Background(),
+		httpServerConfig: &config,
+		url:              *parseURL(config.URL),
+		lgr:              lgr,
+	}
+
 	q.lgr = q.lgr.With(
 		"host", q.url.Host,
 		"scheme", q.url.Scheme,
@@ -65,7 +74,7 @@ func (q *Querier) init() error {
 		q.trsp.TLSClientConfig = &tls.Config{
 			ServerName:         host,
 			InsecureSkipVerify: insecure, //nolint:gosec // not a security concern as we are not actually sending/reading data
-			Certificates:       readClientCert(clientCertFile),
+			Certificates:       tlsCerts,
 			MinVersion:         tls.VersionTLS12,
 		}
 	}
@@ -80,7 +89,7 @@ func (q *Querier) init() error {
 	case "any":
 		network = "tcp"
 	default:
-		return fmt.Errorf("ip version not configured properly. must be either 4, 6, any")
+		return nil, fmt.Errorf("ip version not configured properly. must be either 4, 6, any")
 	}
 
 	q.trsp.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
@@ -109,18 +118,11 @@ func (q *Querier) init() error {
 
 	metrics.RegisterSet(q.mS)
 
-	return nil
+	return &q, nil
 }
 
 // Run starts the querier at the specified interval, with a random jitter of 0-500ms
 func (q *Querier) Run(interval *time.Duration) {
-	err := q.init()
-
-	if err != nil {
-		q.lgr.Error("querier initialization failed", err)
-		return
-	}
-
 	//nolint:gosec // No need for a cryptographic secure random number since this is only used for a jitter.
 	jitter := time.Duration(rand.Float64() * float64(500*time.Millisecond))
 
@@ -246,4 +248,25 @@ func (q *Querier) visit() {
 		contentTransferDurationName, contentTransferDuration,
 		totalDurationDurationName, totalDuration,
 	)
+}
+
+func parseURL(uri string) *url.URL {
+	if !strings.Contains(uri, "://") && !strings.HasPrefix(uri, "//") {
+		uri = "//" + uri
+	}
+
+	parsedURL, err := url.Parse(uri)
+
+	if err != nil {
+		log.Fatalf("could not parse url %q: %v", uri, err)
+	}
+
+	if parsedURL.Scheme == "" {
+		parsedURL.Scheme = "http"
+		if !strings.HasSuffix(parsedURL.Host, ":80") {
+			parsedURL.Scheme += "s"
+		}
+	}
+
+	return parsedURL
 }
