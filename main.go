@@ -2,10 +2,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +19,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/metrics"
+	"github.com/mitchellh/hashstructure/v2"
 	"golang.org/x/exp/slog"
 
 	"gopkg.in/yaml.v3"
@@ -35,6 +41,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  NO_PROXY      comma-separated list of hosts to exclude from proxy")
 }
 
+var errSkipReload = errors.New("skip config reload - already latest config active")
+
 // HTTPServerConfig contains the config for each Host we will query
 type HTTPServerConfig struct {
 	URL         string            `yaml:"url"`
@@ -46,20 +54,52 @@ type HTTPServerConfig struct {
 
 // Config contains the config of the httpstat-metrics app
 type Config struct {
-	HTTPServers []HTTPServerConfig `yaml:"endpoints"`
-	Test        string             `yaml:"test"`
+	HTTPServers   []HTTPServerConfig `yaml:"endpoints"`
+	hashConfigMap map[uint64]HTTPServerConfig
+	lastYamlHash  string
 }
 
-func (c *Config) readConf(configFile string) {
-	yamlFile, err := os.ReadFile(configFile) //nolint:gosec // used to load and unmarshal a text config file
-	if err != nil {
-		log.Fatalf("couldn't open the config file %s, error message: %v ", configFile, err)
+func (c *Config) readConf(configSrc string) error {
+	var config []byte
+
+	var err error
+
+	if strings.Index(configSrc, "http://") == 0 || strings.Index(configSrc, "https://") == 0 {
+		config, err = getConfigFromURL(configSrc)
+	} else {
+		config, err = os.ReadFile(configSrc) //nolint:gosec // used to load and unmarshal a text config file
 	}
 
-	err = yaml.Unmarshal(yamlFile, &c)
+	if err != nil {
+		slog.Error("couldn't open the config file", err, "configSource", configSrc)
+		return err
+	}
+
+	newHashbyte := sha256.Sum256(config)
+	newHash := fmt.Sprintf("%x", newHashbyte)
+
+	if newHash == c.lastYamlHash {
+		return errSkipReload
+	}
+
+	err = yaml.Unmarshal(config, &c)
 	if err != nil {
 		slog.Log(slog.ErrorLevel, "Unmarshal error", err)
+		return err
 	}
+
+	for k := range c.hashConfigMap {
+		delete(c.hashConfigMap, k)
+	}
+
+	for _, conf := range c.HTTPServers {
+		h, _ := hashstructure.Hash(conf, hashstructure.FormatV2, nil)
+		c.hashConfigMap[h] = conf
+	}
+
+	c.lastYamlHash = newHash
+
+	return nil
 }
 
 func main() {
@@ -85,22 +125,6 @@ func main() {
 	slog.SetDefault(lgr)
 	lgr.Info("starting up", "runtime-version", runtime.Version())
 
-	var config Config
-
-	config.readConf(*configFile)
-
-	tlsCert := readClientCert(*certFile)
-
-	for _, httpConfig := range config.HTTPServers {
-		q, err := newQuerier(httpConfig, lgr, *insecure, tlsCert)
-		if err != nil {
-			lgr.Error("unable to create new querier", err)
-			continue
-		}
-
-		go q.Run(interval)
-	}
-
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
 		metrics.WritePrometheus(w, false)
 	})
@@ -114,8 +138,64 @@ func main() {
 		Addr:              ":9090",
 	}
 
-	err := srv.ListenAndServe()
-	lgr.Info("http server finished serving", "error", err)
+	var srvError error
+
+	var config Config
+	config.hashConfigMap = make(map[uint64]HTTPServerConfig)
+
+	tlsCert := readClientCert(*certFile)
+	querierConfigMap := make(map[uint64]context.CancelFunc)
+
+	go func() {
+		srvError = srv.ListenAndServe()
+	}()
+
+	for {
+		if srvError != nil {
+			lgr.Error("http server error, exiting.", srvError)
+			os.Exit(1)
+		}
+
+		switch err := config.readConf(*configFile); err {
+		case nil:
+		case errSkipReload:
+			goto wait
+		default:
+			lgr.Error("couldn't read / parse the config", err)
+			goto wait
+		}
+
+		// first remove any querier that isn't contained in the config anymore
+		for querierConfigHash, cancelFn := range querierConfigMap {
+			if _, ok := config.hashConfigMap[querierConfigHash]; !ok {
+				cancelFn() // cancel the querier context
+				delete(querierConfigMap, querierConfigHash)
+			}
+		}
+
+		// now create queriers for config hashes not yet in querierConfigMap
+		for _, conf := range config.HTTPServers {
+			h, _ := hashstructure.Hash(conf, hashstructure.FormatV2, nil)
+
+			if _, ok := querierConfigMap[h]; !ok {
+				ctx, cancel := context.WithCancel(context.Background())
+				q, err := newQuerier(ctx, conf, lgr, *insecure, tlsCert)
+
+				if err != nil {
+					lgr.Error("unable to create new querier", err)
+					continue
+				}
+
+				querierConfigMap[h] = cancel
+
+				go q.Run(interval)
+			}
+		}
+
+		// and finally wait for 1 minute before reading the configuration again
+	wait:
+		time.Sleep(10 * time.Second)
+	}
 }
 
 // readClientCert - helper function to read client certificate
@@ -159,4 +239,25 @@ func readClientCert(filename string) []tls.Certificate {
 	}
 
 	return []tls.Certificate{cert}
+}
+
+func getConfigFromURL(configSrc string) ([]byte, error) {
+	cl := http.Client{}
+
+	resp, err := cl.Get(configSrc)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	config := new(bytes.Buffer)
+	_, err = io.CopyN(config, resp.Body, 512*1024)
+
+	if err != io.EOF {
+		slog.Error("couldn't reach EOF for config file source. make sure the file is less than 512 KiB", err)
+		return nil, err
+	}
+
+	return config.Bytes(), nil
 }

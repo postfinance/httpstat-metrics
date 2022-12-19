@@ -42,9 +42,9 @@ type Querier struct {
 	mS               *metrics.Set
 }
 
-func newQuerier(config HTTPServerConfig, lgr *slog.Logger, insecure bool, tlsCerts []tls.Certificate) (*Querier, error) {
+func newQuerier(ctx context.Context, config HTTPServerConfig, lgr *slog.Logger, insecure bool, tlsCerts []tls.Certificate) (*Querier, error) {
 	var q = Querier{
-		ctx:              context.Background(),
+		ctx:              ctx,
 		httpServerConfig: &config,
 		url:              *parseURL(config.URL),
 		lgr:              lgr,
