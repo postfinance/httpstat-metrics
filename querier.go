@@ -31,11 +31,13 @@ const (
 // Querier A querier will periodically measure the host specified in its
 // config, and will export the observations as prometheus metrics
 type Querier struct {
+	ctx              context.Context
 	httpServerConfig *HTTPServerConfig
 	labels           string
 	url              url.URL
-	tr               *http.Transport
+	trsp             *http.Transport
 	lgr              *slog.Logger
+	mS               *metrics.Set
 }
 
 func (q *Querier) init() error {
@@ -45,7 +47,7 @@ func (q *Querier) init() error {
 		"ip_version", q.httpServerConfig.IPVersion,
 	)
 
-	q.tr = &http.Transport{
+	q.trsp = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
@@ -60,7 +62,7 @@ func (q *Querier) init() error {
 			host = q.url.Host
 		}
 
-		q.tr.TLSClientConfig = &tls.Config{
+		q.trsp.TLSClientConfig = &tls.Config{
 			ServerName:         host,
 			InsecureSkipVerify: insecure, //nolint:gosec // not a security concern as we are not actually sending/reading data
 			Certificates:       readClientCert(clientCertFile),
@@ -68,15 +70,25 @@ func (q *Querier) init() error {
 		}
 	}
 
+	var network string
+
 	switch q.httpServerConfig.IPVersion {
 	case "4":
-		q.tr.DialContext = dialContext("tcp4")
+		network = "tcp4"
 	case "6":
-		q.tr.DialContext = dialContext("tcp6")
+		network = "tcp6"
 	case "any":
-		q.tr.DialContext = dialContext("tcp")
+		network = "tcp"
 	default:
 		return fmt.Errorf("ip version not configured properly. must be either 4, 6, any")
+	}
+
+	q.trsp.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+			DualStack: false,
+		}).DialContext(ctx, network, addr)
 	}
 
 	labelsMap := q.httpServerConfig.ExtraLabels
@@ -88,10 +100,14 @@ func (q *Querier) init() error {
 		q.labels += fmt.Sprintf("%s=%q,", label, value)
 	}
 
+	q.mS = metrics.NewSet()
+
 	q.labels = q.labels[0 : len(q.labels)-1]
 
-	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, q.labels)).Set(0)
-	metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorsTotalName, q.labels)).Set(0)
+	q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, q.labels)).Set(0)
+	q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorsTotalName, q.labels)).Set(0)
+
+	metrics.RegisterSet(q.mS)
 
 	return nil
 }
@@ -117,9 +133,17 @@ func (q *Querier) Run(interval *time.Duration) {
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		q.visit()
+loop:
+	for {
+		select {
+		case <-ticker.C:
+			q.visit()
+		case <-q.ctx.Done():
+			break loop
+		}
 	}
+
+	q.mS.UnregisterAllMetrics()
 }
 
 // visit visits a url and times the interaction.
@@ -168,16 +192,15 @@ func (q *Querier) visit() {
 			gotFirstResponseByteTime = time.Now()
 		},
 	}
-	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
 
-	client := &http.Client{
-		Transport: q.tr,
-	}
-
-	defer q.tr.CloseIdleConnections()
-
-	resp, err := client.Do(req)
 	l := q.labels
+	client := &http.Client{
+		Transport: q.trsp,
+	}
+	req = req.WithContext(httptrace.WithClientTrace(q.ctx, trace))
+	resp, err := client.Do(req)
+
+	defer q.trsp.CloseIdleConnections()
 
 	if err != nil {
 		metrics.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, l)).Inc()
