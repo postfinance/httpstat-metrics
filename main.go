@@ -59,49 +59,6 @@ type Config struct {
 	lastYamlHash  string
 }
 
-func (c *Config) readConf(configSrc string) error {
-	var config []byte
-
-	var err error
-
-	if strings.Index(configSrc, "http://") == 0 || strings.Index(configSrc, "https://") == 0 {
-		config, err = getConfigFromURL(configSrc)
-	} else {
-		config, err = os.ReadFile(configSrc) //nolint:gosec // used to load and unmarshal a text config file
-	}
-
-	if err != nil {
-		slog.Error("couldn't open the config file", err, "configSource", configSrc)
-		return err
-	}
-
-	newHashbyte := sha256.Sum256(config)
-	newHash := fmt.Sprintf("%x", newHashbyte)
-
-	if newHash == c.lastYamlHash {
-		return errSkipReload
-	}
-
-	err = yaml.Unmarshal(config, &c)
-	if err != nil {
-		slog.Log(slog.ErrorLevel, "Unmarshal error", err)
-		return err
-	}
-
-	for k := range c.hashConfigMap {
-		delete(c.hashConfigMap, k)
-	}
-
-	for _, conf := range c.HTTPServers {
-		h, _ := hashstructure.Hash(conf, hashstructure.FormatV2, nil)
-		c.hashConfigMap[h] = conf
-	}
-
-	c.lastYamlHash = newHash
-
-	return nil
-}
-
 func main() {
 	configFile := flag.String("config", "config.yaml", "path to the configuration file")
 	certFile := flag.String("E", "", "client cert file for tls config")
@@ -161,6 +118,10 @@ func main() {
 		case errSkipReload:
 			goto wait
 		default:
+			if config.lastYamlHash == "" {
+				lgr.Error("Could not read a config file on first start. exiting", err)
+				os.Exit(1)
+			}
 			lgr.Error("couldn't read / parse the config", err)
 			goto wait
 		}
@@ -260,4 +221,47 @@ func getConfigFromURL(configSrc string) ([]byte, error) {
 	}
 
 	return config.Bytes(), nil
+}
+
+func (c *Config) readConf(configSrc string) error {
+	var config []byte
+
+	var err error
+
+	if strings.Index(configSrc, "http://") == 0 || strings.Index(configSrc, "https://") == 0 {
+		config, err = getConfigFromURL(configSrc)
+	} else {
+		config, err = os.ReadFile(configSrc) //nolint:gosec // used to load and unmarshal a text config file
+	}
+
+	if err != nil {
+		slog.Error("couldn't open the config file", err, "configSource", configSrc)
+		return err
+	}
+
+	newHashbyte := sha256.Sum256(config)
+	newHash := fmt.Sprintf("%x", newHashbyte)
+
+	if newHash == c.lastYamlHash {
+		return errSkipReload
+	}
+
+	err = yaml.Unmarshal(config, &c)
+	if err != nil {
+		slog.Log(slog.ErrorLevel, "Unmarshal error", err)
+		return err
+	}
+
+	for k := range c.hashConfigMap {
+		delete(c.hashConfigMap, k)
+	}
+
+	for _, conf := range c.HTTPServers {
+		h, _ := hashstructure.Hash(conf, hashstructure.FormatV2, nil)
+		c.hashConfigMap[h] = conf
+	}
+
+	c.lastYamlHash = newHash
+
+	return nil
 }
