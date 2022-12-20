@@ -150,6 +150,8 @@ loop:
 
 // visit visits a url and times the interaction.
 // If the response is a 30x, visit follows the redirect.
+//
+//nolint:funlen // the httpTrace declaration takes a lot of lines, that cannot be moved away from this function
 func (q *Querier) visit() {
 	req, _ := http.NewRequest("GET", q.url.String(), http.NoBody) // we ignore the err as the URL has already been parsed and is therefore valid
 

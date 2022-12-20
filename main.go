@@ -59,6 +59,7 @@ type Config struct {
 	lastYamlHash  string
 }
 
+//nolint:funlen // all variables are declared within main, easier without other functions
 func main() {
 	configFile := flag.String("config", "config.yaml", "path to the configuration file")
 	certFile := flag.String("E", "", "client cert file for tls config")
@@ -122,7 +123,9 @@ func main() {
 				lgr.Error("Could not read a config file on first start. exiting", err)
 				os.Exit(1)
 			}
+
 			lgr.Error("couldn't read / parse the config", err)
+
 			goto wait
 		}
 
