@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -61,7 +62,7 @@ type Config struct {
 
 //nolint:funlen // all variables are declared within main, easier without other functions
 func main() {
-	configFile := flag.String("config", "config.yaml", "path to the configuration file")
+	configFile := flag.String("config", "config.yaml", "path or URL to a config file, or path to a directory containing config files")
 	certFile := flag.String("E", "", "client cert file for tls config")
 	insecure := flag.Bool("k", false, "allow insecure SSL connections")
 	debug := flag.Bool("debug", false, "increase logging verbosity")
@@ -158,7 +159,7 @@ func main() {
 
 		// and finally wait for 1 minute before reading the configuration again
 	wait:
-		time.Sleep(10 * time.Second)
+		time.Sleep(60 * time.Second)
 	}
 }
 
@@ -226,6 +227,42 @@ func getConfigFromURL(configSrc string) ([]byte, error) {
 	return config.Bytes(), nil
 }
 
+func getConfigFromDir(configSrc string) ([]byte, error) {
+	files, err := os.ReadDir(configSrc)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	mergedCfg := &Config{}
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		if !strings.HasSuffix(file.Name(), ".yaml") && !strings.HasSuffix(file.Name(), ".yml") {
+			continue
+		}
+
+		config, err := os.ReadFile(configSrc + file.Name()) //nolint:gosec // used to load and unmarshal a text config file
+		if err != nil {
+			return nil, err
+		}
+
+		c := &Config{}
+		err = yaml.Unmarshal(config, c)
+
+		if err != nil {
+			slog.Log(slog.ErrorLevel, "Unmarshal error", err)
+			return nil, err
+		}
+
+		mergedCfg.HTTPServers = append(mergedCfg.HTTPServers, c.HTTPServers...)
+	}
+
+	return yaml.Marshal(mergedCfg)
+}
+
 func (c *Config) readConf(configSrc string) error {
 	var config []byte
 
@@ -234,7 +271,15 @@ func (c *Config) readConf(configSrc string) error {
 	if strings.Index(configSrc, "http://") == 0 || strings.Index(configSrc, "https://") == 0 {
 		config, err = getConfigFromURL(configSrc)
 	} else {
-		config, err = os.ReadFile(configSrc) //nolint:gosec // used to load and unmarshal a text config file
+		var cfgFileInfo fs.FileInfo
+		cfgFileInfo, err = os.Stat(configSrc)
+		if err == nil {
+			if cfgFileInfo.IsDir() {
+				config, err = getConfigFromDir(configSrc)
+			} else {
+				config, err = os.ReadFile(configSrc) //nolint:gosec // used to load and unmarshal a text config file
+			}
+		}
 	}
 
 	if err != nil {
