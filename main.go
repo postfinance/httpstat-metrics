@@ -227,40 +227,68 @@ func getConfigFromURL(configSrc string) ([]byte, error) {
 	return config.Bytes(), nil
 }
 
-func getConfigFromDir(configSrc string) ([]byte, error) {
-	files, err := os.ReadDir(configSrc)
-	if err != nil {
-		log.Fatal(err)
-	}
-
+func mergeConfig(configs [][]byte) ([]byte, error) {
 	mergedCfg := &Config{}
 
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-
-		if !strings.HasSuffix(file.Name(), ".yaml") && !strings.HasSuffix(file.Name(), ".yml") {
-			continue
-		}
-
-		config, err := os.ReadFile(configSrc + file.Name()) //nolint:gosec // used to load and unmarshal a text config file
-		if err != nil {
-			return nil, err
-		}
-
+	for _, conf := range configs {
 		c := &Config{}
-		err = yaml.Unmarshal(config, c)
+		err := yaml.Unmarshal(conf, c)
 
 		if err != nil {
-			slog.Log(slog.ErrorLevel, "Unmarshal error", err)
-			return nil, err
+			slog.Log(slog.ErrorLevel, "Unmarshal error", "error", err)
+			continue
 		}
 
 		mergedCfg.HTTPServers = append(mergedCfg.HTTPServers, c.HTTPServers...)
 	}
 
 	return yaml.Marshal(mergedCfg)
+}
+
+func getConfigFromDir(configSrc string) ([]byte, error) {
+	files, err := os.ReadDir(configSrc)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	configs := make([][]byte, 0)
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		if strings.HasSuffix(file.Name(), ".url") {
+			cfgURLbytes, err := os.ReadFile(configSrc + file.Name()) //nolint:gosec // reading url from file
+			if err != nil {
+				continue
+			}
+
+			cfgURL := string(cfgURLbytes)
+
+			if !strings.HasPrefix(cfgURL, "http://") && !strings.HasPrefix(cfgURL, "https://") {
+				slog.Log(slog.DebugLevel, ".url config file containing invalid URL. the URL must be prefixed with http{,s}://")
+				continue
+			}
+
+			config, err := getConfigFromURL(cfgURL)
+			if err != nil {
+				slog.Log(slog.DebugLevel, "unable to get config from URL", "error", err)
+				continue
+			}
+
+			configs = append(configs, config)
+		} else if strings.HasSuffix(file.Name(), ".yaml") || strings.HasSuffix(file.Name(), ".yml") {
+			config, err := os.ReadFile(configSrc + file.Name()) //nolint:gosec // reading config files from disk
+			if err != nil {
+				slog.Log(slog.DebugLevel, "unable to read config from file", "fileName", file.Name())
+			}
+
+			configs = append(configs, config)
+		}
+	}
+
+	return mergeConfig(configs)
 }
 
 func (c *Config) readConf(configSrc string) error {
@@ -277,7 +305,7 @@ func (c *Config) readConf(configSrc string) error {
 			if cfgFileInfo.IsDir() {
 				config, err = getConfigFromDir(configSrc)
 			} else {
-				config, err = os.ReadFile(configSrc) //nolint:gosec // used to load and unmarshal a text config file
+				config, err = os.ReadFile(configSrc) //nolint:gosec // reading config files from disk
 			}
 		}
 	}
