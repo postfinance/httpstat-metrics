@@ -75,6 +75,7 @@ func newQuerier(ctx context.Context, config HTTPServerConfig, lgr *slog.Logger, 
 			ServerName:         host,
 			InsecureSkipVerify: insecure, //nolint:gosec // not a security concern as we are not actually sending/reading data
 			Certificates:       tlsCerts,
+			RootCAs:            caCertPool,
 			MinVersion:         tls.VersionTLS12,
 		}
 	}
@@ -213,6 +214,7 @@ func (q *Querier) visit() {
 	if err != nil {
 		q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, l)).Inc()
 		q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorsTotalName, l)).Inc()
+		q.lgr.Debug("error during query", "error", err)
 
 		return
 	}

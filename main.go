@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -27,7 +28,8 @@ import (
 )
 
 var (
-	version = "devel" // for -v flag, updated during the release process with -ldflags=-X=main.version=...
+	version    = "devel"      // for -v flag, updated during the release process with -ldflags=-X=main.version=...
+	caCertPool *x509.CertPool //nolint:gochecknoglobals // the caCertPool is used throughout the program
 )
 
 func usage() {
@@ -63,8 +65,9 @@ type Config struct {
 //nolint:funlen // all variables are declared within main, easier without other functions
 func main() {
 	configFile := flag.String("config", "config.yaml", "path or URL to a config file, or path to a directory containing config files")
-	certFile := flag.String("E", "", "client cert file for tls config")
-	insecure := flag.Bool("k", false, "allow insecure SSL connections")
+	clientCertFile := flag.String("client-cert-file", "", "client cert file for tls config (contains public and private key)")
+	caCertFile := flag.String("ca-cert-file", "", "ca file containing additional PEM CAs")
+	insecure := flag.Bool("insecure", false, "allow insecure SSL connections")
 	debug := flag.Bool("debug", false, "increase logging verbosity")
 	interval := flag.Duration("interval", 5*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
 
@@ -102,7 +105,8 @@ func main() {
 	var config Config
 	config.hashConfigMap = make(map[uint64]HTTPServerConfig)
 
-	tlsCert := readClientCert(*certFile)
+	tlsCert := readClientCert(*clientCertFile)
+	caCertPool = readCACert(*caCertFile)
 	querierConfigMap := make(map[uint64]context.CancelFunc)
 
 	go func() {
@@ -206,8 +210,40 @@ func readClientCert(filename string) []tls.Certificate {
 	return []tls.Certificate{cert}
 }
 
+// readCACert - helper function to read CA certs
+// from pem formatted file
+func readCACert(filename string) (pool *x509.CertPool) {
+	pool, _ = x509.SystemCertPool()
+	if pool == nil {
+		pool = x509.NewCertPool()
+	}
+
+	if filename == "" {
+		return
+	}
+
+	// read client certificate file
+	certFileBytes, err := os.ReadFile(filename) //nolint:gosec // we read the CAs from the given filename
+	if err != nil {
+		log.Fatalf("failed to read CA certificates file: %v", err)
+	}
+
+	ok := pool.AppendCertsFromPEM(certFileBytes)
+	if !ok {
+		slog.Warn("couldn't parse additional ca certs, continuing with system CA only")
+	}
+
+	return pool
+}
+
 func getConfigFromURL(configSrc string) ([]byte, error) {
-	cl := http.Client{}
+	trsp := http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    caCertPool,
+	}}
+	cl := http.Client{
+		Transport: &trsp,
+	}
 
 	resp, err := cl.Get(configSrc)
 	if err != nil {
