@@ -95,8 +95,7 @@ func newQuerier(ctx context.Context, config HTTPServerConfig, lgr *slog.Logger, 
 
 	q.trsp.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
 		return (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
+			Timeout:   dialerTimeout,
 			DualStack: false,
 		}).DialContext(ctx, network, addr)
 	}

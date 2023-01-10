@@ -28,8 +28,9 @@ import (
 )
 
 var (
-	version    = "devel"      // for -v flag, updated during the release process with -ldflags=-X=main.version=...
-	caCertPool *x509.CertPool //nolint:gochecknoglobals // the caCertPool is used throughout the program
+	version       = "devel"      // for -v flag, updated during the release process with -ldflags=-X=main.version=...
+	caCertPool    *x509.CertPool //nolint:gochecknoglobals // the caCertPool is used throughout the program
+	dialerTimeout time.Duration  //noling:gochecknoglobals // TODO: refactor global variables
 )
 
 func usage() {
@@ -70,6 +71,7 @@ func main() {
 	insecure := flag.Bool("insecure", false, "allow insecure SSL connections")
 	debug := flag.Bool("debug", false, "increase logging verbosity")
 	interval := flag.Duration("interval", 5*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
+	flag.DurationVar(&dialerTimeout, "timeout", 15*time.Second, "timeout between a query stops. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
 
 	flag.Usage = usage
 
