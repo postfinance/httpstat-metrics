@@ -271,6 +271,8 @@ func getConfigFromDir(configSrc string) ([]byte, error) {
 				continue
 			}
 
+			cfgURL = strings.TrimSpace(cfgURL)
+
 			config, err := getConfigFromURL(cfgURL)
 			if err != nil {
 				slog.Log(slog.DebugLevel, "unable to get config from URL", "error", err)
@@ -281,7 +283,7 @@ func getConfigFromDir(configSrc string) ([]byte, error) {
 		} else if strings.HasSuffix(file.Name(), ".yaml") || strings.HasSuffix(file.Name(), ".yml") {
 			config, err := os.ReadFile(configSrc + file.Name()) //nolint:gosec // reading config files from disk
 			if err != nil {
-				slog.Log(slog.DebugLevel, "unable to read config from file", "fileName", file.Name())
+				slog.Log(slog.DebugLevel, "unable to read config from file", "fileName", file.Name(), "error", err)
 			}
 
 			configs = append(configs, config)
