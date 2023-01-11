@@ -138,8 +138,9 @@ func main() {
 
 		// first remove any querier that isn't contained in the config anymore
 		for querierConfigHash, cancelFn := range querierConfigMap {
-			if _, ok := config.hashConfigMap[querierConfigHash]; !ok {
+			if cfg, ok := config.hashConfigMap[querierConfigHash]; !ok {
 				cancelFn() // cancel the querier context
+				slog.Info("stopping and deleting querier", "host", cfg.Host)
 				delete(querierConfigMap, querierConfigHash)
 			}
 		}
