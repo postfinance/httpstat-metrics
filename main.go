@@ -273,7 +273,7 @@ func mergeConfig(configs [][]byte) ([]byte, error) {
 		err := yaml.Unmarshal(conf, c)
 
 		if err != nil {
-			slog.Log(slog.ErrorLevel, "Unmarshal error", "error", err)
+			slog.Error("Unmarshal error", err)
 			continue
 		}
 
@@ -305,7 +305,7 @@ func getConfigFromDir(configSrc string) ([]byte, error) {
 			cfgURL := string(cfgURLbytes)
 
 			if !strings.HasPrefix(cfgURL, "http://") && !strings.HasPrefix(cfgURL, "https://") {
-				slog.Log(slog.DebugLevel, ".url config file containing invalid URL. the URL must be prefixed with http{,s}://")
+				slog.Log(slog.ErrorLevel, ".url config file containing invalid URL. the URL must be prefixed with http{,s}://")
 				continue
 			}
 
@@ -313,7 +313,7 @@ func getConfigFromDir(configSrc string) ([]byte, error) {
 
 			config, err := getConfigFromURL(cfgURL)
 			if err != nil {
-				slog.Log(slog.DebugLevel, "unable to get config from URL", "error", err)
+				slog.Error("unable to get config from URL", err)
 				continue
 			}
 
@@ -321,7 +321,7 @@ func getConfigFromDir(configSrc string) ([]byte, error) {
 		} else if strings.HasSuffix(file.Name(), ".yaml") || strings.HasSuffix(file.Name(), ".yml") {
 			config, err := os.ReadFile(configSrc + file.Name()) //nolint:gosec // reading config files from disk
 			if err != nil {
-				slog.Log(slog.DebugLevel, "unable to read config from file", "fileName", file.Name(), "error", err)
+				slog.Error("unable to read config from file", err, "fileName", file.Name())
 			}
 
 			configs = append(configs, config)
@@ -364,7 +364,7 @@ func (c *Config) readConf(configSrc string) error {
 
 	err = yaml.Unmarshal(config, &c)
 	if err != nil {
-		slog.Log(slog.ErrorLevel, "Unmarshal error", err)
+		slog.Error("Unmarshal error", err)
 		return err
 	}
 
