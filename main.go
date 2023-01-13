@@ -126,11 +126,6 @@ func main() {
 		case errSkipReload:
 			goto wait
 		default:
-			if config.lastYamlHash == "" {
-				lgr.Error("Could not read a config file on first start. exiting", err)
-				os.Exit(1)
-			}
-
 			lgr.Error("couldn't read / parse the config", err)
 
 			goto wait
