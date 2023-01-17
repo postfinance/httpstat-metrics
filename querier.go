@@ -146,7 +146,7 @@ func (q *Querier) Run(interval *time.Duration) {
 	//nolint:gosec // No need for a cryptographic secure random number since this is only used for a jitter.
 	jitter := time.Duration(rand.Float64() * float64(*interval))
 
-	q.lgr.Info("start a new quierer with some delay",
+	q.lgr.Info("start a new querier with some delay",
 		"jitter", jitter,
 	)
 
