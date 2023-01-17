@@ -141,10 +141,10 @@ func newQuerier(ctx context.Context, config HTTPServerConfig, lgr *slog.Logger, 
 	return &q, nil
 }
 
-// Run starts the querier at the specified interval, with a random jitter of 0-500ms
+// Run starts the querier at the specified interval, with a random jitter of 0-interval
 func (q *Querier) Run(interval *time.Duration) {
 	//nolint:gosec // No need for a cryptographic secure random number since this is only used for a jitter.
-	jitter := time.Duration(rand.Float64() * float64(500*time.Millisecond))
+	jitter := time.Duration(rand.Float64() * float64(*interval))
 
 	q.lgr.Info("start a new quierer with some delay",
 		"jitter", jitter,
