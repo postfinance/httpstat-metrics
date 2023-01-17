@@ -72,7 +72,16 @@ func newQuerier(ctx context.Context, config HTTPServerConfig, lgr *slog.Logger, 
 	}
 
 	if q.url.Scheme == "https" {
-		host, _, err := net.SplitHostPort(q.url.Host)
+		var host string
+
+		var err error
+
+		if len(config.Host) > 0 {
+			host = config.Host
+		} else {
+			host, _, err = net.SplitHostPort(q.url.Host)
+		}
+
 		if err != nil {
 			host = q.url.Host
 		}
