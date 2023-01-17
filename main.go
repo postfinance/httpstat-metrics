@@ -68,6 +68,7 @@ func main() {
 	configFile := flag.String("config", "config.yaml", "path or URL to a config file, or path to a directory containing config files")
 	clientCertFile := flag.String("client-cert-file", "", "client cert file for tls config (contains public and private key)")
 	caCertFile := flag.String("ca-cert-file", "", "ca file containing additional PEM CAs")
+	hostPort := flag.String("port", ":9090", "host:port on which to listen. (host can be omitted to listen on all interfaces)")
 	insecure := flag.Bool("insecure", false, "allow insecure SSL connections")
 	debug := flag.Bool("debug", false, "increase logging verbosity")
 	interval := flag.Duration("interval", 5*time.Second, "interval between http queries. must be in Go time.ParseDuration format, e.g. 5s or 5m or 1h, etc")
@@ -99,7 +100,7 @@ func main() {
 		IdleTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 2 * time.Second,
 		Handler:           http.DefaultServeMux,
-		Addr:              ":9090",
+		Addr:              *hostPort,
 	}
 
 	var srvError error
