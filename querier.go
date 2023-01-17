@@ -51,10 +51,16 @@ func newQuerier(ctx context.Context, config HTTPServerConfig, lgr *slog.Logger, 
 	}
 
 	q.lgr = q.lgr.With(
-		"host", q.url.Host,
+		"url", config.URL,
 		"scheme", q.url.Scheme,
 		"ip_version", q.httpServerConfig.IPVersion,
 	)
+
+	if len(config.Host) > 0 {
+		q.lgr = q.lgr.With(
+			"host", config.Host,
+		)
+	}
 
 	q.trsp = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -101,7 +107,12 @@ func newQuerier(ctx context.Context, config HTTPServerConfig, lgr *slog.Logger, 
 	}
 
 	labelsMap := q.httpServerConfig.ExtraLabels
-	labelsMap["host"] = q.url.Host
+
+	if len(q.httpServerConfig.Host) > 0 {
+		labelsMap["host"] = q.httpServerConfig.Host
+	}
+
+	labelsMap["url"] = q.httpServerConfig.URL
 	labelsMap["scheme"] = q.url.Scheme
 	labelsMap["ip_version"] = q.httpServerConfig.IPVersion
 
