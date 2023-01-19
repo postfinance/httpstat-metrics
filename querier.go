@@ -125,13 +125,17 @@ func newQuerier(ctx context.Context, config HTTPServerConfig, lgr *slog.Logger, 
 	labelsMap["scheme"] = q.url.Scheme
 	labelsMap["ip_version"] = q.httpServerConfig.IPVersion
 
-	for label, value := range q.httpServerConfig.ExtraLabels {
+	for label, value := range labelsMap {
 		q.labels += fmt.Sprintf("%s=%q,", label, value)
 	}
 
-	q.mS = metrics.NewSet()
+	if len(additionalLabels) > 0 {
+		q.labels += fmt.Sprintf("%s,", additionalLabels)
+	}
 
 	q.labels = q.labels[0 : len(q.labels)-1]
+
+	q.mS = metrics.NewSet()
 
 	q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, q.labels)).Set(0)
 	q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorsTotalName, q.labels)).Set(0)
