@@ -30,8 +30,8 @@ import (
 var (
 	version          = "devel"      // for -v flag, updated during the release process with -ldflags=-X=main.version=...
 	caCertPool       *x509.CertPool //nolint:gochecknoglobals // the caCertPool is used throughout the program
-	dialerTimeout    time.Duration  //noling:gochecknoglobals // TODO: refactor global variables
-	additionalLabels string         //noling:gochecknoglobals // TODO: refactor global variables
+	dialerTimeout    time.Duration  //nolint:gochecknoglobals // TODO: refactor global variables
+	additionalLabels string         //nolint:gochecknoglobals // TODO: refactor global variables
 )
 
 func usage() {
