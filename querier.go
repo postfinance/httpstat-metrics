@@ -237,7 +237,7 @@ func (q *Querier) visit() {
 	if err != nil {
 		q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, l)).Inc()
 		q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", errorsTotalName, l)).Inc()
-		q.lgr.Debug("error during query", "error", err)
+		q.lgr.Info("error during query", "error", err)
 
 		return
 	}
