@@ -41,8 +41,8 @@ func main() {
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
-	bodySize, _ := io.Copy(io.Discard, resp.Body)
 
+	bodySize, _ := io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 	fmt.Println("body read. size: ", bodySize)
 }

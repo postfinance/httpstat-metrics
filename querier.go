@@ -245,8 +245,9 @@ func (q *Querier) visit() {
 	l += fmt.Sprintf(",%s=%q", "status_code", strconv.Itoa(resp.StatusCode))
 	q.mS.GetOrCreateCounter(fmt.Sprintf("%s{%s}", lookupTotalName, l)).Inc()
 
-	defer resp.Body.Close()
 	bodySize, _ := io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
 	postBodyReadTime := time.Now()
 	l += fmt.Sprintf("%s=%q", ",body_size", strconv.FormatInt(bodySize, 10))
 

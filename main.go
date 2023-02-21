@@ -251,10 +251,9 @@ func getConfigFromURL(configSrc string) ([]byte, error) {
 		return nil, err
 	}
 
-	defer resp.Body.Close()
-
 	config := new(bytes.Buffer)
 	_, err = io.CopyN(config, resp.Body, 512*1024)
+	resp.Body.Close()
 
 	if err != io.EOF {
 		slog.Error("couldn't reach EOF for config file source. make sure the file is less than 512 KiB", err)
